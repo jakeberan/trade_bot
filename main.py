@@ -56,9 +56,14 @@ def extract_league_settings(league_info):
     # Get number of teams
     num_teams = league_info.get('total_rosters', 12)
     
-    # Get number of QBs from roster positions (count starting QB slots)
+    # Get number of QBs from roster positions
+    # Count QB + SUPER_FLEX positions (Superflex = 2QB league for valuation purposes)
     roster_positions = league_info.get('roster_positions', [])
-    num_qbs = roster_positions.count('QB') if roster_positions else 1
+    qb_count = roster_positions.count('QB')
+    superflex_count = roster_positions.count('SUPER_FLEX')
+    
+    # If there's a superflex, treat as 2QB league for FantasyCalc
+    num_qbs = 2 if superflex_count > 0 else qb_count if qb_count > 0 else 1
     
     # Get PPR scoring (check 'rec' in scoring_settings)
     scoring = league_info.get('scoring_settings', {})
