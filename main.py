@@ -47,13 +47,34 @@ def get_league_users(league_id):
         return response.json()
     return None
 
+def extract_league_settings(league_info):
+    """Extract relevant settings from league info for FantasyCalc API"""
+    # Determine if dynasty (type: 0 = redraft, 1 = keeper, 2 = dynasty)
+    league_type_num = league_info.get('settings', {}).get('type', 0)
+    is_dynasty = league_type_num == 2
+    
+    # Get number of teams
+    num_teams = league_info.get('total_rosters', 12)
+    
+    # Get number of QBs from roster positions (count starting QB slots)
+    roster_positions = league_info.get('roster_positions', [])
+    num_qbs = roster_positions.count('QB') if roster_positions else 1
+    
+    # Get PPR scoring (check 'rec' in scoring_settings)
+    scoring = league_info.get('scoring_settings', {})
+    ppr = scoring.get('rec', 0)  # 0 = standard, 0.5 = half-PPR, 1 = full PPR
+    
+    return {
+        'is_dynasty': is_dynasty,
+        'num_qbs': num_qbs,
+        'num_teams': num_teams,
+        'ppr': ppr
+    }
+
 @st.cache_data(ttl=3600)
-def get_player_values(league_type):
-    """Get player values from FantasyCalc"""
-    if league_type == "Dynasty":
-        url = "https://api.fantasycalc.com/values/current?isDynasty=true&numQbs=1&numTeams=12&ppr=1"
-    else:  # Redraft
-        url = "https://api.fantasycalc.com/values/current?isDynasty=false&numQbs=1&numTeams=12&ppr=1"
+def get_player_values(is_dynasty, num_qbs, num_teams, ppr):
+    """Get player values from FantasyCalc based on league settings"""
+    url = f"https://api.fantasycalc.com/values/current?isDynasty={str(is_dynasty).lower()}&numQbs={num_qbs}&numTeams={num_teams}&ppr={ppr}"
     
     response = requests.get(url)
     if response.status_code == 200:
@@ -251,7 +272,20 @@ st.markdown(f"*Logged in as: {SLEEPER_USERNAME}*")
 with st.sidebar:
     st.header("League Settings")
     league_id = st.text_input("League ID", placeholder="Enter your Sleeper league ID")
-    league_type = st.selectbox("League Type", ["Dynasty", "Redraft"])
+    
+    if league_id:
+        # Show detected league settings
+        temp_league_info = get_league_info(league_id)
+        if temp_league_info:
+            settings = extract_league_settings(temp_league_info)
+            st.markdown("---")
+            st.markdown("### Detected Settings")
+            st.info(f"""
+            **League Type:** {"Dynasty" if settings['is_dynasty'] else "Redraft"}  
+            **Teams:** {settings['num_teams']}  
+            **QBs:** {settings['num_qbs']}  
+            **Scoring:** {settings['ppr']} PPR
+            """)
     
     st.markdown("---")
     st.markdown("### Trade Fairness")
@@ -271,8 +305,23 @@ with st.spinner("Loading league data..."):
     league_info = get_league_info(league_id)
     rosters = get_league_rosters(league_id)
     users = get_league_users(league_id)
-    player_values = get_player_values(league_type)
     all_players = get_all_players()
+
+if not all([user_data, league_info, rosters, users]):
+    st.error("❌ Could not load league data. Please check your League ID.")
+    st.stop()
+
+# Extract league settings for FantasyCalc API
+league_settings = extract_league_settings(league_info)
+
+# Get player values based on actual league settings
+with st.spinner("Loading player values..."):
+    player_values = get_player_values(
+        league_settings['is_dynasty'],
+        league_settings['num_qbs'],
+        league_settings['num_teams'],
+        league_settings['ppr']
+    )
 
 if not all([user_data, league_info, rosters, users]):
     st.error("❌ Could not load league data. Please check your League ID.")
@@ -294,8 +343,10 @@ user_map = {u['user_id']: u['display_name'] for u in users}
 roster_to_user = {r['roster_id']: user_map.get(r['owner_id'], 'Unknown') for r in rosters}
 
 # Display league info
-st.success(f"✅ Loaded **{league_info['name']}** ({league_type})")
+league_type_display = "Dynasty" if league_settings['is_dynasty'] else "Redraft"
+st.success(f"✅ Loaded **{league_info['name']}** ({league_type_display})")
 st.markdown(f"**Your Team:** {roster_to_user[my_roster_id]} | **Roster Size:** {len(my_roster)} players")
+st.caption(f"Using FantasyCalc values: {league_settings['num_teams']}-team, {league_settings['num_qbs']}QB, {league_settings['ppr']} PPR")
 
 # Main tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Target Player", "📈 Value Improvement", "🔄 Consolidation", "💎 Buy Low", "🔧 Custom Trade"])
