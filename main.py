@@ -139,6 +139,50 @@ def generate_value_improvement_trades(my_roster, opponent_roster, player_values,
     trades.sort(key=lambda x: x['net_value'], reverse=True)
     return trades[:20]  # Return top 20
 
+def generate_consolidation_trades(my_roster, opponent_roster, player_values, all_players):
+    """Generate consolidation trades (2-for-1 or 3-for-2)"""
+    trades = []
+    
+    # 2-for-1 trades
+    for my_combo in combinations(my_roster, 2):
+        for opp_player in opponent_roster:
+            given_value, received_value = calculate_trade_value(list(my_combo), [opp_player], player_values)
+            
+            # Only if you're upgrading and it's fair
+            if received_value > 0 and is_fair_trade(given_value, received_value):
+                trades.append({
+                    'you_give': [all_players.get(p, {}).get('full_name', p) for p in my_combo],
+                    'you_receive': [all_players.get(opp_player, {}).get('full_name', opp_player)],
+                    'you_give_ids': list(my_combo),
+                    'you_receive_ids': [opp_player],
+                    'you_give_value': given_value,
+                    'you_receive_value': received_value,
+                    'net_value': received_value - given_value,
+                    'type': '2-for-1'
+                })
+    
+    # 3-for-2 trades
+    for my_combo in combinations(my_roster, 3):
+        for opp_combo in combinations(opponent_roster, 2):
+            given_value, received_value = calculate_trade_value(list(my_combo), list(opp_combo), player_values)
+            
+            # Only if you're upgrading and it's fair
+            if received_value > 0 and is_fair_trade(given_value, received_value):
+                trades.append({
+                    'you_give': [all_players.get(p, {}).get('full_name', p) for p in my_combo],
+                    'you_receive': [all_players.get(p, {}).get('full_name', p) for p in opp_combo],
+                    'you_give_ids': list(my_combo),
+                    'you_receive_ids': list(opp_combo),
+                    'you_give_value': given_value,
+                    'you_receive_value': received_value,
+                    'net_value': received_value - given_value,
+                    'type': '3-for-2'
+                })
+    
+    # Sort by net value
+    trades.sort(key=lambda x: x['net_value'], reverse=True)
+    return trades[:25]  # Return top 25
+
 def generate_buy_low_trades(my_roster, opponent_roster, player_values, all_players, max_players=2):
     """Find trades where you can buy low on undervalued players"""
     # This is similar to value improvement but focuses on getting higher value players
@@ -254,7 +298,7 @@ st.success(f"✅ Loaded **{league_info['name']}** ({league_type})")
 st.markdown(f"**Your Team:** {roster_to_user[my_roster_id]} | **Roster Size:** {len(my_roster)} players")
 
 # Main tabs
-tab1, tab2, tab3, tab4 = st.tabs(["🎯 Target Player", "📈 Value Improvement", "💎 Buy Low", "🔧 Custom Trade"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Target Player", "📈 Value Improvement", "🔄 Consolidation", "💎 Buy Low", "🔧 Custom Trade"])
 
 with tab1:
     st.header("Target a Specific Player")
@@ -285,15 +329,32 @@ with tab1:
             format_func=lambda x: f"{x['name']} ({x['position']}, {x['team']}) - Value: {x['value']:.0f} - Owner: {x['owner']}"
         )
         
+        # Add exclude players option
+        st.markdown("---")
+        st.markdown("**Exclude Players from Trade Offers:**")
+        my_players_list = [{'id': p, 'name': all_players.get(p, {}).get('full_name', p), 
+                           'position': all_players.get(p, {}).get('position', 'N/A'),
+                           'value': player_values.get(p, 0)} for p in my_roster]
+        my_players_list.sort(key=lambda x: x['value'], reverse=True)
+        
+        excluded_players = st.multiselect(
+            "Select players you DON'T want to trade",
+            options=[p['id'] for p in my_players_list],
+            format_func=lambda x: f"{next(p['name'] for p in my_players_list if p['id'] == x)} ({next(p['position'] for p in my_players_list if p['id'] == x)}) - Value: {player_values.get(x, 0):.0f}",
+            key="exclude_players"
+        )
+        
         if st.button("Generate Trades", key="target_btn"):
             with st.spinner("Analyzing possible trades..."):
                 # Find opponent roster
                 opponent_roster_data = next((r for r in other_rosters if selected_target['owner'] == roster_to_user[r['roster_id']]), None)
                 if opponent_roster_data:
                     opponent_roster = opponent_roster_data.get('players', [])
+                    # Filter out excluded players
+                    available_roster = [p for p in my_roster if p not in excluded_players]
                     trades = generate_target_player_trades(
                         selected_target['id'],
-                        my_roster,
+                        available_roster,
                         opponent_roster,
                         player_values,
                         all_players
@@ -315,17 +376,25 @@ with tab1:
                                         st.markdown(f"- {player}")
                                     st.markdown(f"*Total Value: {trade['you_receive_value']:.0f}*")
                     else:
-                        st.warning("No fair trades found for this player.")
+                        st.warning("No fair trades found for this player with the remaining available players.")
 
 with tab2:
     st.header("Value Improvement Trades")
     st.markdown("Find trades where you gain value while staying fair")
     
-    opponent_select = st.selectbox(
-        "Select Opponent",
-        options=[roster_to_user[r['roster_id']] for r in other_rosters],
-        key="value_opponent"
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        opponent_select = st.selectbox(
+            "Select Opponent",
+            options=[roster_to_user[r['roster_id']] for r in other_rosters],
+            key="value_opponent"
+        )
+    with col2:
+        target_position = st.selectbox(
+            "Target Position (Optional)",
+            options=["All Positions", "QB", "RB", "WR", "TE"],
+            key="target_position"
+        )
     
     if st.button("Find Trades", key="value_btn"):
         with st.spinner("Finding value trades..."):
@@ -335,25 +404,122 @@ with tab2:
                 opponent_roster = opponent_roster_data.get('players', [])
                 trades = generate_value_improvement_trades(my_roster, opponent_roster, player_values, all_players)
                 
+                # Filter by position if specified
+                if target_position != "All Positions":
+                    filtered_trades = []
+                    for trade in trades:
+                        # Check if we're receiving players at the target position
+                        receiving_positions = [all_players.get(pid, {}).get('position') for pid in trade['you_receive_ids']]
+                        if target_position in receiving_positions:
+                            filtered_trades.append(trade)
+                    trades = filtered_trades
+                
                 if trades:
                     st.success(f"Found {len(trades)} trades that improve your value!")
                     for i, trade in enumerate(trades, 1):
-                        with st.expander(f"Trade {i} - Gain {trade['net_value']:.0f} value"):
+                        # Show positions for received players
+                        received_positions = [all_players.get(pid, {}).get('position', '?') for pid in trade['you_receive_ids']]
+                        positions_str = ", ".join(received_positions)
+                        
+                        with st.expander(f"Trade {i} - Gain {trade['net_value']:.0f} value ({positions_str})"):
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.markdown("**You Give:**")
-                                for player in trade['you_give']:
-                                    st.markdown(f"- {player}")
+                                for idx, player in enumerate(trade['you_give']):
+                                    pos = all_players.get(trade['you_give_ids'][idx], {}).get('position', '?')
+                                    st.markdown(f"- {player} ({pos})")
                                 st.markdown(f"*Total Value: {trade['you_give_value']:.0f}*")
                             with col2:
                                 st.markdown("**You Receive:**")
-                                for player in trade['you_receive']:
-                                    st.markdown(f"- {player}")
+                                for idx, player in enumerate(trade['you_receive']):
+                                    pos = all_players.get(trade['you_receive_ids'][idx], {}).get('position', '?')
+                                    st.markdown(f"- {player} ({pos})")
                                 st.markdown(f"*Total Value: {trade['you_receive_value']:.0f}*")
                 else:
-                    st.warning("No value-improving trades found with this team.")
+                    st.warning(f"No value-improving trades found with this team{' for ' + target_position if target_position != 'All Positions' else ''}.")
 
 with tab3:
+    st.header("Consolidation Strategy")
+    st.markdown("Trade multiple players to upgrade to fewer, better players")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        opponent_select_cons = st.selectbox(
+            "Select Opponent",
+            options=[roster_to_user[r['roster_id']] for r in other_rosters],
+            key="cons_opponent"
+        )
+    with col2:
+        consolidation_type = st.selectbox(
+            "Consolidation Type",
+            options=["All", "2-for-1", "3-for-2"],
+            key="cons_type"
+        )
+    
+    if st.button("Find Consolidation Trades", key="cons_btn"):
+        with st.spinner("Finding consolidation opportunities..."):
+            opponent_roster_data = next((r for r in rosters if roster_to_user[r['roster_id']] == opponent_select_cons), None)
+            if opponent_roster_data:
+                opponent_roster = opponent_roster_data.get('players', [])
+                trades = generate_consolidation_trades(my_roster, opponent_roster, player_values, all_players)
+                
+                # Filter by type if specified
+                if consolidation_type != "All":
+                    trades = [t for t in trades if t['type'] == consolidation_type]
+                
+                if trades:
+                    st.success(f"Found {len(trades)} consolidation trades!")
+                    
+                    # Group by type
+                    two_for_one = [t for t in trades if t['type'] == '2-for-1']
+                    three_for_two = [t for t in trades if t['type'] == '3-for-2']
+                    
+                    if two_for_one and consolidation_type in ["All", "2-for-1"]:
+                        st.markdown("### 2-for-1 Trades")
+                        for i, trade in enumerate(two_for_one[:10], 1):
+                            # Get star player position
+                            star_pos = all_players.get(trade['you_receive_ids'][0], {}).get('position', '?')
+                            
+                            with st.expander(f"2-for-1 Option {i} - Get {trade['you_receive'][0]} ({star_pos}) | Net: {trade['net_value']:+.0f}"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.markdown("**You Give (2 players):**")
+                                    for idx, player in enumerate(trade['you_give']):
+                                        pos = all_players.get(trade['you_give_ids'][idx], {}).get('position', '?')
+                                        val = player_values.get(trade['you_give_ids'][idx], 0)
+                                        st.markdown(f"- {player} ({pos}) - {val:.0f}")
+                                    st.markdown(f"*Total Value: {trade['you_give_value']:.0f}*")
+                                with col2:
+                                    st.markdown("**You Receive (1 player):**")
+                                    for idx, player in enumerate(trade['you_receive']):
+                                        pos = all_players.get(trade['you_receive_ids'][idx], {}).get('position', '?')
+                                        val = player_values.get(trade['you_receive_ids'][idx], 0)
+                                        st.markdown(f"- {player} ({pos}) - {val:.0f}")
+                                    st.markdown(f"*Total Value: {trade['you_receive_value']:.0f}*")
+                    
+                    if three_for_two and consolidation_type in ["All", "3-for-2"]:
+                        st.markdown("### 3-for-2 Trades")
+                        for i, trade in enumerate(three_for_two[:10], 1):
+                            with st.expander(f"3-for-2 Option {i} - Net: {trade['net_value']:+.0f}"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.markdown("**You Give (3 players):**")
+                                    for idx, player in enumerate(trade['you_give']):
+                                        pos = all_players.get(trade['you_give_ids'][idx], {}).get('position', '?')
+                                        val = player_values.get(trade['you_give_ids'][idx], 0)
+                                        st.markdown(f"- {player} ({pos}) - {val:.0f}")
+                                    st.markdown(f"*Total Value: {trade['you_give_value']:.0f}*")
+                                with col2:
+                                    st.markdown("**You Receive (2 players):**")
+                                    for idx, player in enumerate(trade['you_receive']):
+                                        pos = all_players.get(trade['you_receive_ids'][idx], {}).get('position', '?')
+                                        val = player_values.get(trade['you_receive_ids'][idx], 0)
+                                        st.markdown(f"- {player} ({pos}) - {val:.0f}")
+                                    st.markdown(f"*Total Value: {trade['you_receive_value']:.0f}*")
+                else:
+                    st.warning(f"No {consolidation_type if consolidation_type != 'All' else ''} consolidation trades found with this team.")
+
+with tab4:
     st.header("Buy Low Opportunities")
     st.markdown("Find trades where you consolidate players to get stars")
     
